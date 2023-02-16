@@ -14,7 +14,6 @@ import (
 	"errors"
 	"image"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -57,10 +56,6 @@ type Outline struct {
 	Top float64
 }
 
-type Link struct {
-	URI string
-}
-
 // New returns new fitz document.
 func New(filename string) (f *Document, err error) {
 	f = &Document{}
@@ -75,8 +70,16 @@ func New(filename string) (f *Document, err error) {
 		return
 	}
 
-	b, e := ioutil.ReadFile(filename)
+	file, e := os.Open(filename)
 	if e != nil {
+		err = e
+		return
+	}
+	defer file.Close()
+
+	b := make([]byte, 64)
+	n, e := file.Read(b)
+	if n < 64 || e != nil {
 		err = ErrOpenDocument
 		return
 	}
@@ -160,7 +163,7 @@ func NewFromMemory(b []byte) (f *Document, err error) {
 
 // NewFromReader returns new fitz document from io.Reader.
 func NewFromReader(r io.Reader) (f *Document, err error) {
-	b, e := ioutil.ReadAll(r)
+	b, e := io.ReadAll(r)
 	if e != nil {
 		err = e
 		return
@@ -195,15 +198,15 @@ func (f *Document) ImageDPI(pageNumber int, dpi float64) (image.Image, error) {
 	page := C.fz_load_page(f.ctx, f.doc, C.int(pageNumber))
 	defer C.fz_drop_page(f.ctx, page)
 
-	var bounds C.fz_rect
-	bounds = C.fz_bound_page(f.ctx, page)
+	// var bounds C.fz_rect
+	bounds := C.fz_bound_page(f.ctx, page)
 
-	var ctm C.fz_matrix
-	ctm = C.fz_scale(C.float(dpi/72), C.float(dpi/72))
+	// var ctm C.fz_matrix
+	ctm := C.fz_scale(C.float(dpi/72), C.float(dpi/72))
 
-	var bbox C.fz_irect
+	// var bbox C.fz_irect
 	bounds = C.fz_transform_rect(bounds, ctm)
-	bbox = C.fz_round_rect(bounds)
+	bbox := C.fz_round_rect(bounds)
 
 	pixmap := C.fz_new_pixmap_with_bbox(f.ctx, C.fz_device_rgb(f.ctx), bbox, nil, 1)
 	if pixmap == nil {
@@ -226,7 +229,6 @@ func (f *Document) ImageDPI(pageNumber int, dpi float64) (image.Image, error) {
 	if pixels == nil {
 		return nil, ErrPixmapSamples
 	}
-	defer C.free(unsafe.Pointer(pixels))
 
 	img.Pix = C.GoBytes(unsafe.Pointer(pixels), C.int(4*bbox.x1*bbox.y1))
 	img.Rect = image.Rect(int(bbox.x0), int(bbox.y0), int(bbox.x1), int(bbox.y1))
@@ -250,8 +252,7 @@ func (f *Document) ImagePNG(pageNumber int, dpi float64) ([]byte, error) {
 	var bounds C.fz_rect
 	bounds = C.fz_bound_page(f.ctx, page)
 
-	var ctm C.fz_matrix
-	ctm = C.fz_scale(C.float(dpi/72), C.float(dpi/72))
+	ctm := C.fz_scale(C.float(dpi/72), C.float(dpi/72))
 
 	var bbox C.fz_irect
 	bounds = C.fz_transform_rect(bounds, ctm)
@@ -283,42 +284,6 @@ func (f *Document) ImagePNG(pageNumber int, dpi float64) ([]byte, error) {
 	return []byte(str), nil
 }
 
-func (f *Document) Links(pageNumber int) ([]Link, error) {
-	f.mtx.Lock()
-	defer f.mtx.Unlock()
-
-	if pageNumber >= f.NumPage() {
-		return nil, ErrPageMissing
-	}
-
-	page := C.fz_load_page(f.ctx, f.doc, C.int(pageNumber))
-	defer C.fz_drop_page(f.ctx, page)
-
-	links := C.fz_load_links(f.ctx, page)
-	defer C.fz_drop_link(f.ctx, links)
-
-	linkCount := 0
-	for currLink := links; currLink != nil; currLink = currLink.next {
-		linkCount++
-	}
-
-	if linkCount == 0 {
-		return nil, nil
-	}
-
-	gLinks := make([]Link, linkCount)
-
-	currLink := links
-	for i := 0; i < linkCount; i++ {
-		gLinks[i] = Link{
-			URI: C.GoString(currLink.uri),
-		}
-		currLink = currLink.next
-	}
-
-	return gLinks, nil
-}
-
 // Text returns text for given page number.
 func (f *Document) Text(pageNumber int) (string, error) {
 	f.mtx.Lock()
@@ -331,11 +296,9 @@ func (f *Document) Text(pageNumber int) (string, error) {
 	page := C.fz_load_page(f.ctx, f.doc, C.int(pageNumber))
 	defer C.fz_drop_page(f.ctx, page)
 
-	var bounds C.fz_rect
-	bounds = C.fz_bound_page(f.ctx, page)
+	bounds := C.fz_bound_page(f.ctx, page)
 
-	var ctm C.fz_matrix
-	ctm = C.fz_scale(C.float(72.0/72), C.float(72.0/72))
+	ctm := C.fz_scale(C.float(72.0/72), C.float(72.0/72))
 
 	text := C.fz_new_stext_page(f.ctx, bounds)
 	defer C.fz_drop_stext_page(f.ctx, text)
@@ -372,11 +335,9 @@ func (f *Document) HTML(pageNumber int, header bool) (string, error) {
 	page := C.fz_load_page(f.ctx, f.doc, C.int(pageNumber))
 	defer C.fz_drop_page(f.ctx, page)
 
-	var bounds C.fz_rect
-	bounds = C.fz_bound_page(f.ctx, page)
+	bounds := C.fz_bound_page(f.ctx, page)
 
-	var ctm C.fz_matrix
-	ctm = C.fz_scale(C.float(72.0/72), C.float(72.0/72))
+	ctm := C.fz_scale(C.float(72.0/72), C.float(72.0/72))
 
 	text := C.fz_new_stext_page(f.ctx, bounds)
 	defer C.fz_drop_stext_page(f.ctx, text)
@@ -427,8 +388,7 @@ func (f *Document) SVG(pageNumber int) (string, error) {
 	var bounds C.fz_rect
 	bounds = C.fz_bound_page(f.ctx, page)
 
-	var ctm C.fz_matrix
-	ctm = C.fz_scale(C.float(72.0/72), C.float(72.0/72))
+	ctm := C.fz_scale(C.float(72.0/72), C.float(72.0/72))
 	bounds = C.fz_transform_rect(bounds, ctm)
 
 	buf := C.fz_new_buffer(f.ctx, 1024)
